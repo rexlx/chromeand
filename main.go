@@ -13,6 +13,7 @@ import (
 
 func main() {
 	devtoolsURL := "ws://127.0.0.1:9222"
+	baseURL := "http://localhost:8081"
 
 	allocCtx, cancelAlloc := chromedp.NewRemoteAllocator(context.Background(), devtoolsURL)
 	defer cancelAlloc()
@@ -20,49 +21,48 @@ func main() {
 	ctx, cancelCtx := chromedp.NewContext(allocCtx)
 	defer cancelCtx()
 
-	// 120-second threshold matching your environment parameters
 	ctx, cancelTimeout := context.WithTimeout(ctx, 120*time.Second)
 	defer cancelTimeout()
 
-	// Define the raw JSON payload data you want to submit to your endpoint
-	bulkPayloadJSON := `{"iocs": ["192.168.1.100", "malicious-domain.io"]}`
+	// Raw indicator blob data to pass directly to the payload field
+	indicatorBlob := "192.168.1.100\nmalicious-domain.io"
 
 	var apiResponse string
 	err := chromedp.Run(ctx,
-		// Navigate to your application front-end to establish/use the authenticated session context
-		chromedp.Navigate("http://localhost:8081/app"),
+		// Navigate to the front-end to utilize the browser context
+		chromedp.Navigate(baseURL+"/app"),
 
-		// Wait strictly for the page body to assure the execution runtime is active
+		// Ensure the DOM has finished loading
 		chromedp.WaitVisible(`body`, chromedp.ByQuery),
 
-		// Hit your backend route natively using fetch; browser cookies are automatically attached
+		// Dispatches the JSON structure natively via fetch using the existing session cookies
 		chromedp.Evaluate(fmt.Sprintf(`
-            (async function() {
-                const response = await fetch('/api/v1/bulk-search', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify(%s)
-                });
+			(async function() {
+				const response = await fetch('/parse', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json'
+					},
+					body: JSON.stringify({ blob: %q })
+				});
 
-                return await response.text();
-            })()
-        `, bulkPayloadJSON), &apiResponse),
+				return await response.text();
+			})()
+		`, indicatorBlob), &apiResponse),
 	)
 
 	if err != nil {
-		log.Fatalf("Automation stalled or failed: %v", err)
+		log.Fatalf("Automation failed: %v", err)
 	}
 
-	// Structuralize local document return matrix
+	// Structuralize local document return matrix using the baseURL variable for assets
 	fullHTML := fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@1.0.2/css/bulma.min.css">
-    <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
+    <link rel="stylesheet" href="%[1]s/static/bulma.min.css">
+    <link rel="stylesheet" href="%[1]s/static/material-icons.css">
     <title>ThreatPunch Export Matrix</title>
     <style>
         body { background-color: #000000; color: #ffffff; padding: 2rem; }
@@ -72,11 +72,11 @@ func main() {
 <body>
     <div class="container">
         <div class="box has-background-dark">
-            %s
+            %[2]s
         </div>
     </div>
 </body>
-</html>`, apiResponse)
+</html>`, baseURL, apiResponse)
 
 	outputPath := "search_result.html"
 	err = os.WriteFile(outputPath, []byte(fullHTML), 0644)

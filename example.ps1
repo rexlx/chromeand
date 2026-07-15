@@ -1,6 +1,6 @@
 # 1. Fetch the active tabs and get the WebSocket Debug URL
 $ChromeInfo = Invoke-RestMethod -Uri "http://127.0.0.1:9222/json"
-$TargetPage = $ChromeInfo | Where-Object { $_.url -like "*localhost:8080/app*" } | Select-Object -First 1
+$TargetPage = $ChromeInfo | Where-Object { $_.url -like "*https://neo.nullferatu.com:8081/app*" } | Select-Object -First 1
 $WsUrl = $TargetPage.webSocketDebuggerUrl
 
 # 2. Create the WebSocket Connection

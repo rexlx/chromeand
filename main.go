@@ -2,18 +2,21 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"html"
 	"log"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 )
 
 func main() {
 	devtoolsURL := "ws://127.0.0.1:9222"
-	baseURL := "http://localhost:8081"
+	baseURL := "http://neo.nullferatu.com:8081"
 
 	allocCtx, cancelAlloc := chromedp.NewRemoteAllocator(context.Background(), devtoolsURL)
 	defer cancelAlloc()
@@ -25,9 +28,16 @@ func main() {
 	defer cancelTimeout()
 
 	// Raw indicator blob data to pass directly to the payload field
-	indicatorBlob := "192.168.1.100\nmalicious-domain.io"
+	indicatorBlob := "'8.8.8.8' malicious-domain.io"
 
-	var apiResponse string
+	type parseResult struct {
+		OK     bool   `json:"ok"`
+		Status int    `json:"status"`
+		Body   string `json:"body"`
+	}
+
+	var fetchResult parseResult
+
 	err := chromedp.Run(ctx,
 		// Navigate to the front-end to utilize the browser context
 		chromedp.Navigate(baseURL+"/app"),
@@ -37,25 +47,46 @@ func main() {
 
 		// Dispatches the JSON structure natively via fetch using the existing session cookies
 		chromedp.Evaluate(fmt.Sprintf(`
-			(async function() {
-				const response = await fetch('/parse', {
-					method: 'POST',
-					headers: {
-						'Content-Type': 'application/json'
-					},
-					body: JSON.stringify({ blob: %q })
-				});
+            (async function() {
+                const response = await fetch('/parse', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ blob: %q })
+                });
 
-				return await response.text();
-			})()
-		`, indicatorBlob), &apiResponse),
+                return {
+                    ok: response.ok,
+                    status: response.status,
+                    body: await response.text()
+                };
+            })()
+        `, indicatorBlob), &fetchResult, chromedp.EvalAsValue, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
+			return p.WithAwaitPromise(true)
+		}),
 	)
 
 	if err != nil {
+		fmt.Println(indicatorBlob)
 		log.Fatalf("Automation failed: %v", err)
 	}
 
-	// Structuralize local document return matrix using the baseURL variable for assets
+	if !fetchResult.OK {
+		log.Fatalf("Backend returned non-OK response: status=%d body=%s", fetchResult.Status, fetchResult.Body)
+	}
+
+	var parsed any
+	if err := json.Unmarshal([]byte(fetchResult.Body), &parsed); err != nil {
+		log.Fatalf("Failed to parse backend JSON body: %v", err)
+	}
+
+	prettyJSON, err := json.MarshalIndent(parsed, "", "  ")
+	if err != nil {
+		log.Fatalf("Failed to format backend JSON body: %v", err)
+	}
+
+	// Escape content before embedding in HTML so raw JSON cannot break markup.
 	fullHTML := fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
@@ -66,17 +97,18 @@ func main() {
     <title>ThreatPunch Export Matrix</title>
     <style>
         body { background-color: #000000; color: #ffffff; padding: 2rem; }
-        .box { border: 1px solid #333333; white-space: pre-wrap; font-family: monospace; }
+        .box { border: 1px solid #333333; white-space: pre-wrap; font-family: monospace; overflow-x: auto; }
     </style>
 </head>
 <body>
     <div class="container">
+        <h1 class="title has-text-info mb-5">ThreatPunch Raw Output</h1>
         <div class="box has-background-dark">
             %[2]s
         </div>
     </div>
 </body>
-</html>`, baseURL, apiResponse)
+</html>`, baseURL, html.EscapeString(string(prettyJSON)))
 
 	outputPath := "search_result.html"
 	err = os.WriteFile(outputPath, []byte(fullHTML), 0644)
